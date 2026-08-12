@@ -1,0 +1,25 @@
+appId: dev.aiden.freellm-ide
+productName: FreeLLM IDE
+directories:
+  buildResources: build
+  output: release
+files:
+  - out/**
+  - '!**/*.map'
+asarUnpack:
+  - '**/node_modules/@lydell/node-pty*/**'
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+mac:
+  target: dmg
+  category: public.app-category.developer-tools
+linux:
+  target: AppImage
+  category: Development

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      The production CSP is injected at build time by the cspPlugin in
+      electron.vite.config.ts. It is deliberately absent in dev, where Vite's
+      React Refresh preamble is an inline script that 'script-src self' blocks —
+      which renders a blank window with no obvious cause.
+    -->
+    <title>FreeLLM IDE</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

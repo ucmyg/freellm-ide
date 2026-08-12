@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    A shell prompt: chevron plus caret bar. Reads as "coding agent" at any size,
+    and the two shapes stay distinct down to 16px because the gap between them
+    is wider than either stroke.
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1b1f25" />
+      <stop offset="100%" stop-color="#0c0e11" />
+    </linearGradient>
+    <!--
+      userSpaceOnUse, not the default objectBoundingBox: the caret bar is a
+      horizontal path whose bounding box has zero height, which makes a
+      proportional gradient degenerate and drops the stroke entirely.
+    -->
+    <linearGradient id="mark" gradientUnits="userSpaceOnUse" x1="300" y1="340" x2="720" y2="700">
+      <stop offset="0%" stop-color="#f0b45c" />
+      <stop offset="100%" stop-color="#d9903a" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="224" fill="url(#tile)" />
+  <rect
+    x="8"
+    y="8"
+    width="1008"
+    height="1008"
+    rx="216"
+    fill="none"
+    stroke="#333a44"
+    stroke-width="16"
+  />
+
+  <g
+    fill="none"
+    stroke="url(#mark)"
+    stroke-width="86"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M317 366 L487 512 L317 658" />
+    <path d="M566 682 H717" />
+  </g>
+</svg>

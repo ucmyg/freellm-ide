@@ -1,0 +1,16 @@
+node_modules/
+out/
+dist/
+release/
+
+*.log
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+
+.env
+.env.local
+
+# Editor/agent scratch
+.vscode/
+.idea/
