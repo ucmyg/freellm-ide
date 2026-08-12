@@ -42,7 +42,7 @@ and a key.
 ## Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/freellm-ide.git
+git clone https://github.com/ucmyg/freellm-ide.git
 cd freellm-ide
 npm install
 npm run dev
