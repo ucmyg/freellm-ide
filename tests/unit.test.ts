@@ -33,13 +33,21 @@ describe('workspace path confinement', () => {
     expect(ws.resolveInWorkspace(abs)).toBe(abs)
   })
 
-  test.each([
+  // A drive letter is only an absolute path on Windows; on POSIX it is an
+  // ordinary filename containing backslashes, which legitimately resolves
+  // inside the workspace. Keep it platform-scoped so this asserts confinement
+  // rather than asserting Windows semantics on Linux.
+  const escapes = [
     '../outside.ts',
     '../../etc/passwd',
     'src/../../escape.ts',
-    'C:\\Windows\\System32\\drivers\\etc\\hosts',
+    // Absolute on POSIX; on Windows this resolves to <drive>:\etc\passwd,
+    // which is still outside the workspace.
     '/etc/passwd',
-  ])('refuses to escape the workspace: %s', (evil) => {
+    ...(process.platform === 'win32' ? ['C:\\Windows\\System32\\drivers\\etc\\hosts'] : []),
+  ]
+
+  test.each(escapes)('refuses to escape the workspace: %s', (evil) => {
     expect(() => ws.resolveInWorkspace(evil)).toThrow(/outside the open folder/)
   })
 
