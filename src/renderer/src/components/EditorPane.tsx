@@ -22,12 +22,18 @@ export default function EditorPane({ onSave }: Props) {
   useEffect(() => {
     return window.ide.agent.onEvent(async (event) => {
       if (event.type !== 'files_changed') return
-      const state = useStore.getState()
       for (const path of event.paths) {
-        const open = state.tabs.find((t) => t.path === path)
-        if (!open || isDirty(open)) continue
+        const before = useStore.getState().tabs.find((t) => t.path === path)
+        if (!before || isDirty(before)) continue
+
         const res = await window.ide.workspace.read(path)
-        if (res.ok) useStore.getState().markTabSaved(path, res.value.content)
+        if (!res.ok) continue
+
+        // Re-check after the await: the user may have started typing while the
+        // read was in flight, and "local edits win" has to still hold.
+        const after = useStore.getState().tabs.find((t) => t.path === path)
+        if (!after || isDirty(after)) continue
+        useStore.getState().markTabSaved(path, res.value.content)
       }
     })
   }, [])

@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs'
+import { promises as fs, realpathSync } from 'node:fs'
 import path from 'node:path'
 import ignore, { type Ignore } from 'ignore'
 import type { DirEntry, FileContent } from '@shared/types'
@@ -74,6 +74,33 @@ function isInside(parent: string, child: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
 }
 
+/**
+ * Resolve symlinks and Windows directory junctions before any containment
+ * check. A lexical check alone is not confinement: `ln -s / escape` inside the
+ * workspace would make `escape/etc/passwd` look like a child of the root.
+ *
+ * The target may not exist yet (a file about to be created), so this walks up
+ * to the deepest existing ancestor, canonicalises that, and re-appends the
+ * missing tail.
+ */
+function canonicalize(target: string): string {
+  const missing: string[] = []
+  let current = target
+
+  for (;;) {
+    try {
+      const real = realpathSync.native(current)
+      return missing.length ? path.join(real, ...missing.reverse()) : real
+    } catch {
+      const parent = path.dirname(current)
+      // Hit the drive/filesystem root without finding anything that exists.
+      if (parent === current) return target
+      missing.push(path.basename(current))
+      current = parent
+    }
+  }
+}
+
 export function getWorkspaceRoot(): string | null {
   return workspaceRoot
 }
@@ -115,8 +142,12 @@ export function resolveInWorkspace(relOrAbs: string): string {
   const candidate = path.resolve(root, relOrAbs)
 
   if (accessPolicy.fullDiskAccess) return candidate
-  if (isInside(root, candidate)) return candidate
-  if (accessPolicy.additionalRoots.some((extra) => isInside(extra, candidate))) return candidate
+
+  // Compare canonical paths so a symlink or junction cannot smuggle a path out
+  // of the workspace while still looking like a child of it.
+  const real = canonicalize(candidate)
+  const allowed = [root, ...accessPolicy.additionalRoots].map(canonicalize)
+  if (allowed.some((base) => isInside(base, real))) return candidate
 
   throw new Error(
     `Path is outside the open folder: ${relOrAbs}. Add its directory under Settings → Access, or turn on full disk access.`,
@@ -135,11 +166,16 @@ export function toRelative(absPath: string): string {
 
 export function isIgnored(relPath: string): boolean {
   if (!relPath || relPath === '.') return false
-  const first = relPath.split('/')[0]
-  if (first && ALWAYS_SKIP.has(first)) return true
+
   const segments = relPath.split('/')
   if (segments.some((s) => ALWAYS_SKIP.has(s))) return true
-  return ignoreFilter?.ignores(relPath) ?? false
+
+  // `ignore` throws RangeError on absolute paths and on anything starting with
+  // "./", so normalise first and skip the filter for paths it cannot judge.
+  const normalized = relPath.replace(/^\.\//, '')
+  if (!normalized || path.isAbsolute(normalized) || normalized.startsWith('..')) return false
+
+  return ignoreFilter?.ignores(normalized) ?? false
 }
 
 /* ------------------------------------------------------------------ */
@@ -234,7 +270,14 @@ export async function createEntry(relPath: string, isDirectory: boolean): Promis
 
 export async function deleteEntry(relPath: string): Promise<void> {
   const abs = resolveInWorkspace(relPath)
-  if (abs === requireRoot()) throw new Error('Refusing to delete the workspace root')
+  // Canonical + case-insensitive where the filesystem is, so "SRC" or a
+  // junction pointing at the root cannot slip past a string comparison.
+  const root = canonicalize(requireRoot())
+  const target = canonicalize(abs)
+  const caseBlind = process.platform === 'win32' || process.platform === 'darwin'
+  const same = caseBlind ? target.toLowerCase() === root.toLowerCase() : target === root
+  if (same) throw new Error('Refusing to delete the workspace root')
+
   await fs.rm(abs, { recursive: true, force: true })
 }
 

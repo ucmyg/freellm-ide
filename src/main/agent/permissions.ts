@@ -44,13 +44,20 @@ export function parseRule(raw: string): ParsedRule | null {
 }
 
 /** Glob with `*` as "any run of characters". Everything else is literal. */
-function globToRegExp(pattern: string, caseInsensitive: boolean): RegExp {
+function globToRegExp(
+  pattern: string,
+  opts: { caseInsensitive: boolean; anchored: boolean },
+): RegExp {
   const source = pattern
     .split('*')
     .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
     .join('.*')
-  return new RegExp(`^${source}$`, caseInsensitive ? 'i' : '')
+  const body = opts.anchored ? `^${source}$` : source
+  return new RegExp(body, opts.caseInsensitive ? 'i' : '')
 }
+
+/** Tools that hand a string straight to a shell. */
+const COMMAND_TOOLS = new Set(['run_command', 'start_background'])
 
 /**
  * The argument a rule's pattern is matched against.
@@ -58,7 +65,7 @@ function globToRegExp(pattern: string, caseInsensitive: boolean): RegExp {
  * only a bare `tool` rule can apply.
  */
 export function subjectFor(toolName: string, input: Record<string, unknown>): string | null {
-  if (toolName === 'run_command') {
+  if (COMMAND_TOOLS.has(toolName)) {
     return typeof input.command === 'string' ? input.command : null
   }
   const path = input.path
@@ -66,25 +73,46 @@ export function subjectFor(toolName: string, input: Record<string, unknown>): st
   return null
 }
 
-function matches(rule: ParsedRule, toolName: string, subject: string | null): boolean {
+/**
+ * Allow and deny are matched deliberately asymmetrically.
+ *
+ * An allow rule is a grant, so it stays narrow: anchored end to end, and
+ * case-sensitive for commands, so no casing trick can widen what the user
+ * agreed to.
+ *
+ * A deny rule is a prohibition, so it stays broad: matched anywhere in the
+ * subject and case-insensitively, because `cd /tmp && GIT PUSH` is the same
+ * dangerous act as `git push` and a Windows shell would run both.
+ */
+function matches(
+  rule: ParsedRule,
+  toolName: string,
+  subject: string | null,
+  intent: 'allow' | 'deny',
+): boolean {
   if (rule.tool !== toolName) return false
   if (!rule.pattern) return true
   if (subject === null) return false
 
-  // Paths are case-insensitive on Windows; commands never are, so a rule
-  // cannot be widened by casing.
-  const caseInsensitive = toolName !== 'run_command' && process.platform === 'win32'
-  return globToRegExp(rule.pattern, caseInsensitive).test(subject)
+  if (intent === 'deny') {
+    return globToRegExp(rule.pattern, { caseInsensitive: true, anchored: false }).test(subject)
+  }
+
+  // Paths are case-insensitive on Windows; command lines are never treated as
+  // such for an allow rule, so casing cannot widen a grant.
+  const caseInsensitive = !COMMAND_TOOLS.has(toolName) && process.platform === 'win32'
+  return globToRegExp(rule.pattern, { caseInsensitive, anchored: true }).test(subject)
 }
 
 function anyMatch(
   rules: string[],
   toolName: string,
   subject: string | null,
+  intent: 'allow' | 'deny',
 ): ParsedRule | null {
   for (const raw of rules) {
     const rule = parseRule(raw)
-    if (rule && matches(rule, toolName, subject)) return rule
+    if (rule && matches(rule, toolName, subject, intent)) return rule
   }
   return null
 }
@@ -110,7 +138,7 @@ export function decide(
   const subject = subjectFor(toolName, input)
 
   // Deny rules win over everything, including 'full'.
-  const denied = anyMatch(settings.denyRules, toolName, subject)
+  const denied = anyMatch(settings.denyRules, toolName, subject, 'deny')
   if (denied) {
     return {
       decision: 'deny',
@@ -125,7 +153,7 @@ export function decide(
   // Reads never prompt in any mode that allows them at all.
   if (kind === 'read') return { decision: 'allow', reason: 'read-only tool' }
 
-  const allowed = anyMatch(settings.allowRules, toolName, subject)
+  const allowed = anyMatch(settings.allowRules, toolName, subject, 'allow')
   if (allowed) {
     return { decision: 'allow', reason: `allowed by "${describe(allowed)}"` }
   }
@@ -145,14 +173,19 @@ export function decide(
 
 /**
  * The rule to persist when the user picks "always allow" on a prompt.
- * Commands are scoped to the exact command line rather than the whole tool —
- * granting blanket shell access from a single prompt is not what anyone means.
+ *
+ * Every command-kind tool is scoped to the exact command line rather than the
+ * whole tool. Keying on the kind rather than the name matters: start_background
+ * also runs arbitrary shell, so a bare rule for it would hand over unattended
+ * shell access from a single prompt — which is not what "always allow" means
+ * to anyone clicking it.
  */
 export function ruleForAlwaysAllow(
   toolName: string,
+  kind: ToolKind,
   input: Record<string, unknown>,
 ): string {
-  if (toolName !== 'run_command') return toolName
+  if (kind !== 'command') return toolName
   const subject = subjectFor(toolName, input)
   return subject ? `${toolName}(${subject})` : toolName
 }

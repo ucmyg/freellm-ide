@@ -77,9 +77,36 @@ function targetFromArgv(): { folder: string; file: string | null } | null {
   return null
 }
 
+/**
+ * Hand a URL to the OS only if it is a plain web link.
+ *
+ * Links in the agent panel come from model output, and openExternal will
+ * happily launch file:, ms-msdt: or any other registered protocol handler — a
+ * markdown link is enough to start something local. Allowlist the schemes that
+ * can only ever open a browser or mail client.
+ */
+function openExternalSafely(url: string): void {
+  try {
+    const { protocol } = new URL(url)
+    if (protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:') {
+      void shell.openExternal(url)
+    }
+  } catch {
+    // Not a parseable URL — ignore it rather than passing it to the shell.
+  }
+}
+
 let mainWindow: BrowserWindow | null = null
 
+/** The window icon for source runs; undefined when packaged or missing. */
+function resolveIconPath(): string | undefined {
+  if (app.isPackaged) return undefined
+  const candidate = path.join(dirname, '../../build/icon.png')
+  return existsSync(candidate) ? candidate : undefined
+}
+
 function createWindow(): BrowserWindow {
+  const iconPath = resolveIconPath()
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -88,11 +115,12 @@ function createWindow(): BrowserWindow {
     backgroundColor: '#0d0f12',
     // Wait for the first paint so the window never flashes white.
     show: false,
-    // Packaged builds get the icon embedded in the executable; this is what
-    // makes the taskbar and title bar right when running from source.
-    ...(process.platform === 'linux' || !app.isPackaged
-      ? { icon: path.join(dirname, '../../build/icon.png') }
-      : {}),
+    // Packaged builds get the icon embedded in the executable (Windows/macOS)
+    // or from the generated desktop entry (Linux). This is only for running
+    // from source, where build/ sits outside the bundle — and it is guarded by
+    // existsSync because a BrowserWindow icon path that does not exist is
+    // silently wrong rather than loud.
+    ...(iconPath ? { icon: iconPath } : {}),
     autoHideMenuBar: true,
     webPreferences: {
       preload: preloadPath(),
@@ -125,7 +153,7 @@ function createWindow(): BrowserWindow {
 
   // Anything that would open a new window goes to the real browser instead.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    openExternalSafely(url)
     return { action: 'deny' }
   })
 
@@ -134,7 +162,7 @@ function createWindow(): BrowserWindow {
     const devUrl = process.env['ELECTRON_RENDERER_URL']
     if (devUrl && url.startsWith(devUrl)) return
     event.preventDefault()
-    void shell.openExternal(url)
+    openExternalSafely(url)
   })
 
   const devUrl = process.env['ELECTRON_RENDERER_URL']

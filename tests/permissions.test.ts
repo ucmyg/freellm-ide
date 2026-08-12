@@ -135,11 +135,41 @@ describe('allow and deny rules', () => {
 
 describe('always-allow rules', () => {
   test('scopes commands to the exact command line', () => {
-    expect(ruleForAlwaysAllow('run_command', { command: 'npm test' })).toBe('run_command(npm test)')
+    expect(ruleForAlwaysAllow('run_command', 'command', { command: 'npm test' })).toBe(
+      'run_command(npm test)',
+    )
+  })
+
+  test('scopes every command-kind tool, not just run_command', () => {
+    // start_background also runs arbitrary shell; a bare rule would hand over
+    // unattended shell access from a single prompt.
+    expect(ruleForAlwaysAllow('start_background', 'command', { command: 'npm run dev' })).toBe(
+      'start_background(npm run dev)',
+    )
   })
 
   test('grants the whole tool for file edits', () => {
-    expect(ruleForAlwaysAllow('edit_file', { path: 'src/a.ts' })).toBe('edit_file')
+    expect(ruleForAlwaysAllow('edit_file', 'edit', { path: 'src/a.ts' })).toBe('edit_file')
+  })
+})
+
+describe('deny rules are matched more broadly than allow rules', () => {
+  test('deny matches anywhere in the command, not just anchored', () => {
+    const s = settings({ permissionMode: 'full', denyRules: ['run_command(git push*)'] })
+    // Prefixing the command must not slip past the prohibition.
+    expect(decide('run_command', 'command', { command: 'cd /tmp && git push origin main' }, s).decision).toBe('deny')
+  })
+
+  test('deny ignores casing, because the shell does too', () => {
+    const s = settings({ permissionMode: 'full', denyRules: ['run_command(git push*)'] })
+    expect(decide('run_command', 'command', { command: 'GIT PUSH origin main' }, s).decision).toBe('deny')
+  })
+
+  test('allow stays anchored and case-sensitive so it cannot be widened', () => {
+    const s = settings({ allowRules: ['run_command(npm test)'] })
+    expect(decide('run_command', 'command', { command: 'npm test' }, s).decision).toBe('allow')
+    expect(decide('run_command', 'command', { command: 'x && npm test' }, s).decision).toBe('ask')
+    expect(decide('run_command', 'command', { command: 'NPM TEST' }, s).decision).toBe('ask')
   })
 })
 

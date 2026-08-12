@@ -17,51 +17,62 @@ export default function SettingsDialog() {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; detail: string } | null>(null)
 
-  // Re-seed the form from stored settings each time the dialog opens.
+  // Seed the form on the open transition only. Depending on `settings` would
+  // re-run on every save — including the ones this dialog itself triggers —
+  // wiping the URL or key the user is halfway through typing.
   useEffect(() => {
-    if (!open || !settings) return
-    setBaseUrl(settings.baseUrl)
-    setMaxTokens(settings.maxTokens)
-    setTemperature(settings.temperature)
+    if (!open) return
+    const current = useStore.getState().settings
+    if (!current) return
+    setBaseUrl(current.baseUrl)
+    setMaxTokens(current.maxTokens)
+    setTemperature(current.temperature)
     setApiKey('')
     setTestResult(null)
-  }, [open, settings])
+  }, [open])
 
   const onSaveAndTest = useCallback(async () => {
     setTesting(true)
     setTestResult(null)
-
-    // Only overwrite the stored key when the user actually typed a new one —
-    // the field is intentionally blank on open so the key is never displayed.
-    if (apiKey.trim()) {
-      const keyRes = await window.ide.settings.setApiKey(apiKey.trim())
-      if (!keyRes.ok) {
-        setTestResult({ ok: false, detail: keyRes.error })
-        setTesting(false)
-        return
-      }
-    }
-
-    const updated = await window.ide.settings.update({ baseUrl: baseUrl.trim(), maxTokens, temperature })
-    setSettings(updated)
-
-    const res = await window.ide.gateway.test()
-    setTestResult(res.ok ? res.value : { ok: false, detail: res.error })
-
-    if (res.ok && res.value.ok) {
-      const modelsRes = await window.ide.gateway.models()
-      if (modelsRes.ok) {
-        useStore.getState().setModels(modelsRes.value)
-        // Adopt a sensible default the first time a catalog arrives.
-        if (!updated.model && modelsRes.value.length) {
-          const next = await window.ide.settings.update({ model: 'auto' })
-          setSettings(next)
+    try {
+      // Only overwrite the stored key when the user actually typed a new one —
+      // the field is intentionally blank on open so the key is never displayed.
+      if (apiKey.trim()) {
+        const keyRes = await window.ide.settings.setApiKey(apiKey.trim())
+        if (!keyRes.ok) {
+          setTestResult({ ok: false, detail: keyRes.error })
+          return
         }
       }
-    }
 
-    setApiKey('')
-    setTesting(false)
+      const updated = await window.ide.settings.update({
+        baseUrl: baseUrl.trim(),
+        maxTokens,
+        temperature,
+      })
+      setSettings(updated)
+
+      const res = await window.ide.gateway.test()
+      setTestResult(res.ok ? res.value : { ok: false, detail: res.error })
+
+      if (res.ok && res.value.ok) {
+        const modelsRes = await window.ide.gateway.models()
+        if (modelsRes.ok) {
+          useStore.getState().setModels(modelsRes.value)
+          // Adopt a sensible default the first time a catalog arrives.
+          if (!updated.model && modelsRes.value.length) {
+            setSettings(await window.ide.settings.update({ model: 'auto' }))
+          }
+        }
+      }
+    } catch (err) {
+      // Without this, one rejected IPC call leaves `testing` true forever and
+      // the button is permanently disabled with no explanation.
+      setTestResult({ ok: false, detail: (err as Error).message ?? String(err) })
+    } finally {
+      setApiKey('')
+      setTesting(false)
+    }
   }, [apiKey, baseUrl, maxTokens, temperature, setSettings])
 
   const onClearKey = useCallback(async () => {

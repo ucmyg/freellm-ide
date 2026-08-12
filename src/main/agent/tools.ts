@@ -398,6 +398,12 @@ const runCommand: ToolDef = {
 
     const { file: shell, args } = shellInvocation(command)
 
+    // An abort that already fired dispatches no further events, so a listener
+    // registered after the fact never runs and the child would outlive Stop.
+    if (ctx.signal.aborted) {
+      return { summary: 'cancelled', content: '[cancelled before the command started]', isError: true }
+    }
+
     const override = num(input, 'timeout_seconds')
     const timeoutMs = override && override > 0 ? override * 1000 : ctx.commandTimeoutMs
     const timeoutSeconds = Math.round(timeoutMs / 1000)

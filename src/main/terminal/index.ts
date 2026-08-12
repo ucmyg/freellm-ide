@@ -108,6 +108,15 @@ export async function createTerminal(
 
   proc.stdout.on('data', (b: Buffer) => emit({ type: 'data', id, data: b.toString('utf8') }))
   proc.stderr.on('data', (b: Buffer) => emit({ type: 'data', id, data: b.toString('utf8') }))
+
+  // Without this listener, a missing or misconfigured shell emits an unhandled
+  // 'error' event, which takes down the entire main process.
+  proc.on('error', (err) => {
+    sessions.delete(id)
+    emit({ type: 'data', id, data: `\x1b[31mFailed to start ${file}: ${err.message}\x1b[0m\r\n` })
+    emit({ type: 'exit', id, exitCode: 1 })
+  })
+
   proc.on('exit', (code) => {
     sessions.delete(id)
     emit({ type: 'exit', id, exitCode: code ?? 0 })

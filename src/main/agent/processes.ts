@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { shellInvocation } from './shell.js'
 
@@ -34,11 +34,22 @@ interface Entry extends BackgroundInfo {
 
 const processes = new Map<string, Entry>()
 
+/** A single line is capped too — progress bars emit megabytes without a newline. */
+const MAX_LINE_CHARS = 8_000
+
 function append(entry: Entry, chunk: string): void {
   const text = entry.partial + chunk
   const parts = text.split('\n')
   // The last element is an unterminated line; hold it until more arrives.
   entry.partial = parts.pop() ?? ''
+
+  // Flush a runaway partial rather than letting it grow without bound: output
+  // that never emits a newline (spinners, \r progress bars) would otherwise be
+  // an unbounded string in memory.
+  if (entry.partial.length > MAX_LINE_CHARS) {
+    parts.push(entry.partial.slice(0, MAX_LINE_CHARS))
+    entry.partial = ''
+  }
 
   for (const line of parts) {
     entry.lines.push(line)
@@ -129,19 +140,38 @@ export function stopBackground(id: string): BackgroundInfo {
   const entry = processes.get(id)
   if (!entry) throw new Error(`No background process with id "${id}".`)
   if (entry.running) {
-    try {
-      // On Windows, killing the shell leaves grandchildren; taskkill /T gets the tree.
-      if (process.platform === 'win32' && entry.child.pid) {
-        spawn('taskkill', ['/pid', String(entry.child.pid), '/T', '/F'], { windowsHide: true })
-      } else {
-        entry.child.kill()
-      }
-    } catch {
-      // already gone
-    }
+    killTree(entry)
     entry.running = false
   }
   return toInfo(entry)
+}
+
+/**
+ * Kill a process and its descendants.
+ *
+ * Synchronous on purpose: this also runs from the app's before-quit handler,
+ * and an async spawn there would be abandoned when the process exits, leaving
+ * every dev server the agent started orphaned and holding its port.
+ *
+ * spawnSync also returns errors rather than emitting them — an async spawn with
+ * no 'error' listener would take the whole main process down if taskkill were
+ * missing from PATH.
+ */
+function killTree(entry: Entry): void {
+  try {
+    if (process.platform === 'win32' && entry.child.pid) {
+      // Killing the shell alone leaves grandchildren behind; /T takes the tree.
+      const result = spawnSync('taskkill', ['/pid', String(entry.child.pid), '/T', '/F'], {
+        windowsHide: true,
+      })
+      // taskkill may be absent or refuse; fall back to the direct kill.
+      if (result.error || result.status !== 0) entry.child.kill()
+    } else {
+      entry.child.kill()
+    }
+  } catch {
+    // Already gone — nothing to clean up.
+  }
 }
 
 export function listBackground(): BackgroundInfo[] {

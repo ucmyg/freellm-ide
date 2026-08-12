@@ -9,7 +9,7 @@ import {
   type GatewayConfig,
 } from '../gateway/client.js'
 import * as ws from '../workspace/index.js'
-import { decide, ruleForAlwaysAllow } from './permissions.js'
+import { decide, ruleForAlwaysAllow, type ToolKind } from './permissions.js'
 import { systemPrompt } from './prompt.js'
 import { riskFor, TOOLS, TOOLS_BY_NAME, type ToolContext } from './tools.js'
 
@@ -37,6 +37,8 @@ export class AgentSession {
   private pendingApprovals = new Map<string, (approved: boolean) => void>()
   /** Approval id -> the allow rule to persist if the user picks "always allow". */
   private pendingRules = new Map<string, string>()
+  /** Incremented by reset(); a turn from an older epoch stops writing anything. */
+  private epoch = 0
   /** Kept stable so the gateway pins this conversation to one upstream model. */
   private sessionId = randomUUID()
 
@@ -52,6 +54,10 @@ export class AgentSession {
 
   reset(): void {
     this.cancel()
+    // Bumping the epoch orphans any turn still unwinding: it may still be
+    // parked inside a tool call, and its trailing pushes must not land in the
+    // fresh conversation as a tool message with no assistant call before it.
+    this.epoch++
     this.history = []
     this.sessionId = randomUUID()
   }
@@ -92,6 +98,9 @@ export class AgentSession {
     const startedAt = Date.now()
     const controller = new AbortController()
     this.abort = controller
+    // If reset() lands while this turn is unwinding, everything below stops
+    // writing to the conversation that replaced it.
+    const epoch = this.epoch
 
     // Attachments are inlined so the model does not have to spend a tool call
     // re-reading a file the user explicitly pointed at.
@@ -164,6 +173,8 @@ export class AgentSession {
           },
         )
 
+        if (this.epoch !== epoch) return
+
         if (result.toolCalls.length === 0) {
           this.history.push({ role: 'assistant', content: result.text })
           this.finish('complete', startedAt, usage, servedBy)
@@ -177,12 +188,27 @@ export class AgentSession {
         })
 
         for (const call of result.toolCalls) {
-          const output = await this.runTool(call, settings, toolContext)
-          this.history.push({
-            role: 'tool',
-            tool_call_id: call.id,
-            content: output,
-          })
+          // Every tool_call must get exactly one tool result, whatever happens.
+          // An assistant message whose calls are unanswered is rejected by the
+          // API on the *next* request, which would strand the conversation.
+          let output: string
+          if (controller.signal.aborted) {
+            // Stop means stop: skip the rest of the batch rather than running
+            // the deletes and writes the model queued up behind the call the
+            // user interrupted.
+            output = 'Cancelled by the user before this ran.'
+            this.emit({ type: 'tool_end', id: call.id, status: 'denied', summary: 'cancelled' })
+          } else {
+            try {
+              output = await this.runTool(call, settings, toolContext)
+            } catch (err) {
+              output = `Error: ${(err as Error).message ?? String(err)}`
+              this.emit({ type: 'tool_end', id: call.id, status: 'error', summary: output })
+            }
+          }
+
+          if (this.epoch !== epoch) return
+          this.history.push({ role: 'tool', tool_call_id: call.id, content: output })
         }
 
         if (controller.signal.aborted) {
@@ -245,11 +271,17 @@ export class AgentSession {
 
     let input: Record<string, unknown>
     try {
-      input = JSON.parse(call.function.arguments || '{}') as Record<string, unknown>
+      const parsed: unknown = JSON.parse(call.function.arguments || '{}')
+      // "null", "3" and "[]" are all valid JSON but would blow up the first
+      // property access downstream, so reject anything that is not an object.
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('not an object')
+      }
+      input = parsed as Record<string, unknown>
     } catch {
       this.emit({ type: 'tool_start', id: call.id, name: tool.name, input: {} })
       this.emit({ type: 'tool_end', id: call.id, status: 'error', summary: 'bad arguments' })
-      return `The arguments for ${tool.name} were not valid JSON. Send them again as a JSON object.`
+      return `The arguments for ${tool.name} must be a JSON object. Send the call again.`
     }
 
     this.emit({ type: 'tool_start', id: call.id, name: tool.name, input })
@@ -283,7 +315,7 @@ export class AgentSession {
         risk: riskFor(tool, input),
       }
 
-      const approved = await this.awaitApproval(request, input)
+      const approved = await this.awaitApproval(request, tool.kind, input)
       if (!approved) {
         this.emit({ type: 'tool_end', id: call.id, status: 'denied', summary: 'denied by user' })
         return `The user denied this ${tool.name} call. Do not retry it or attempt the same change another way. Ask them how they would like to proceed.`
@@ -309,13 +341,14 @@ export class AgentSession {
 
   private awaitApproval(
     request: ApprovalRequest,
+    kind: ToolKind,
     input: Record<string, unknown>,
   ): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       this.pendingApprovals.set(request.id, resolve)
       // Remembered so "always allow" can be scoped to the actual call — a
       // blanket run_command grant is not what one prompt should buy.
-      this.pendingRules.set(request.id, ruleForAlwaysAllow(request.toolName, input))
+      this.pendingRules.set(request.id, ruleForAlwaysAllow(request.toolName, kind, input))
       this.emit({ type: 'approval_request', request })
     })
   }
