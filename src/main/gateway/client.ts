@@ -232,6 +232,8 @@ interface StreamChunk {
   }>
   usage?: { prompt_tokens?: number; completion_tokens?: number }
   error?: { message?: string; type?: string }
+  /** Additive gateway trace for one fusion panel member or the judge. */
+  _fusion?: { event?: 'panel' | 'judge'; status?: 'ok' | 'failed' }
 }
 
 export interface ChatRequest {
@@ -319,9 +321,14 @@ export async function streamChat(
             continue // a malformed frame is not worth killing the turn over
           }
 
-          // A frame carrying an error and no choices means the turn failed
-          // after headers were already committed.
-          if (chunk.error && !chunk.choices) {
+          // A frame carrying an error and no choices normally means the turn
+          // failed after headers were committed. Some gateway versions attach
+          // an individual panel member's failure this way, though. That model
+          // is only one fusion candidate: ignore its error trace and keep
+          // reading so the working panel members can still produce the answer.
+          const failedFusionMember =
+            chunk._fusion?.event === 'panel' && chunk._fusion.status === 'failed'
+          if (chunk.error && !chunk.choices && !failedFusionMember) {
             throw new GatewayError(chunk.error.message ?? 'Stream failed', undefined, chunk.error.type)
           }
 
